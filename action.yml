@@ -1,0 +1,115 @@
+name: PullProof
+description: PullProof is a GitHub Action that reviews documentation changes in pull requests and provides feedback.
+author: Syed Sibtain
+
+branding:
+  icon: book-open # Add an icon that represents documentation review
+  color: blue # Add a color theme
+
+inputs:
+  github_token:
+    description: "GitHub Token for authentication"
+    required: true
+  openai_api_key:
+    description: "OpenAI API Key for AI-based review"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Review Documentation
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+      run: |
+        # Exit on any error
+        set -e
+
+        echo "Starting documentation review..."
+
+        if [ -z "$GITHUB_TOKEN" ]; then
+          echo "::error::GitHub token is not set"
+          exit 1
+        fi
+
+        if [ -z "$OPENAI_API_KEY" ]; then
+          echo "::error::OpenAI API key is not set"
+          exit 1
+        fi
+
+        PR_NUMBER=${{ github.event.number }}
+        echo "Processing PR #$PR_NUMBER"
+
+        # Define the process_review function
+        process_review() {
+          local review="$1"
+          local filename="$2"
+          # Add any processing logic here
+          echo "$review"
+        }
+
+        # Define the prompt for OpenAI
+        PROMPT="Please review the following changes to $filename:\n\n$patch"
+
+        # Fetch PR details focusing on MD files
+        if ! RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/files"); then
+          echo "::error::Failed to fetch PR files"
+          exit 1
+        fi
+
+        # Extract and process only MD and MDX files
+        echo "$RESPONSE" | jq -r '.[] | select(.filename | test("\\.(md|mdx)$")) | {filename: .filename, patch: .patch} | @base64' | while read -r file; do
+          decoded=$(echo "$file" | base64 --decode)
+          filename=$(echo "$decoded" | jq -r '.filename')
+          patch=$(echo "$decoded" | jq -r '.patch')
+          
+          # Properly escape the prompt
+          ESCAPED_PROMPT=$(echo "Please review the following documentation changes and provide a single response formatted exactly like this:
+        ### Summary
+        [Provide a brief overview of the changes]
+
+        ### Feedback
+        [Analyze the technical accuracy and grammatical correctness and fix if necessary]
+
+        ### Suggestions
+        [Offer specific recommendations for improvement]
+
+        Here are the changes to review:
+
+        ${patch}" | jq -Rs .)
+          
+          # Send to OpenAI and WAIT for response
+          API_RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d "{
+              \"model\": \"gpt-4\",
+              \"messages\": [{\"role\": \"user\", \"content\": ${ESCAPED_PROMPT}}],
+              \"temperature\": 0.7
+            }")
+
+          # Check if the API response contains an error
+          if echo "$API_RESPONSE" | jq -e '.error' >/dev/null; then
+            REVIEW="Error getting review: $(echo "$API_RESPONSE" | jq -r '.error.message')"
+          else
+            # Trim any leading/trailing whitespace and ensure proper formatting
+            REVIEW=$(echo "$API_RESPONSE" | jq -r '.choices[0].message.content // "No review content received"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          fi
+
+          # Only proceed if we have a valid review
+          if [ "$REVIEW" != "null" ] && [ -n "$REVIEW" ]; then
+            # Create the comment with the review, ensuring no extra spaces
+            comment="### Documentation Review for \`$filename\`
+
+          $REVIEW"
+            
+            # Finally post the comment
+            curl -s -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+              -d "{\"body\": $(echo "$comment" | jq -R -s '.')}"
+          fi
+        done

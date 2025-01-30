@@ -1,0 +1,21 @@
+name: Documentation Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - "**.md"
+      - "**.mdx"
+
+jobs:
+  review-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run PullProof
+        uses: ./
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
