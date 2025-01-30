@@ -3,8 +3,8 @@ description: PullProof is a GitHub Action that reviews documentation changes in 
 author: Syed Sibtain
 
 branding:
-  icon: book-open # Add an icon that represents documentation review
-  color: blue # Add a color theme
+  icon: book-open
+  color: blue
 
 inputs:
   github_token:
