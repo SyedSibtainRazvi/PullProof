@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Run PullProof
-        uses: your-username/pullproof-action@v1.0.0
+        uses: SyedSibtainRazvi/pullproof-action@v1.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
