@@ -13,8 +13,8 @@ Proofreads every pull request like an editor. PullProof is a GitHub Action that 
 Add this workflow to your `.github/workflows/pullproof.yml` file:
 
 ```yaml
-name: Documentation Review
-on: pull_request
+name: Documentation Review using pullproof
+on: pull_request, syn
 
 jobs:
   review-docs:
