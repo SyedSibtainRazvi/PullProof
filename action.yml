@@ -66,20 +66,27 @@ runs:
         echo "$RESPONSE" | jq -r '.[] | select(.filename | test("\\.(md|mdx)$")) | {filename: .filename, patch: .patch} | @base64' | while read -r file; do
           decoded=$(echo "$file" | base64 --decode)
           filename=$(echo "$decoded" | jq -r '.filename')
-          patch=$(echo "$decoded" | jq -r '.patch')
+          # Extract only added lines from the patch
+          patch=$(echo "$decoded" | jq -r '.patch' | grep -E '^\+' | sed 's/^\+//' | grep -v '^\+\+\+ ')
+          
+          # Skip if there are no added changes
+          if [ -z "$patch" ]; then
+            echo "No additions found in $filename, skipping..."
+            continue
+          fi
           
           # Properly escape the prompt
-          ESCAPED_PROMPT=$(echo "Please review the following documentation changes and provide a single response formatted exactly like this:
+          ESCAPED_PROMPT=$(echo "Please review the following new additions to the documentation and provide a single response formatted exactly like this:
         ### Summary
-        [Provide a brief overview of the changes]
+        [Provide a brief overview of the new additions]
 
         ### Feedback
-        [Analyze the technical accuracy and grammatical correctness and fix if necessary]
+        [Analyze the technical accuracy and grammatical correctness of the new content and fix if necessary]
 
         ### Suggestions
-        [Offer specific recommendations for improvement]
+        [Offer specific recommendations for improving the new content]
 
-        Here are the changes to review:
+        Here are the new additions to review:
 
         ${patch}" | jq -Rs .)
           
