@@ -91,25 +91,34 @@ Be direct. Do not pad with praise. Focus on what needs fixing."
     jq -s '{model: env.MODEL, messages: ., temperature: 0.3, max_tokens: env.MAX_TOKENS}')
 
   local attempt=1
+  local api_response=""
   while [ $attempt -le $RETRY_ATTEMPTS ]; do
     if [ $attempt -gt 1 ]; then
       echo "Retry attempt $attempt of $RETRY_ATTEMPTS..."
       sleep $RETRY_DELAY
     fi
 
-    local api_response=$(curl -sf https://api.openai.com/v1/chat/completions \
+    # --connect-timeout/--max-time bound each request so a stalled connection
+    # can't hang the job (curl's default connect timeout is 300s). -w appends
+    # the HTTP status so we can surface the real error instead of swallowing it.
+    local raw
+    raw=$(curl -s --connect-timeout 10 --max-time 120 -w $'\n%{http_code}' \
+      https://api.openai.com/v1/chat/completions \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $OPENAI_API_KEY" \
-      -d "$escaped_prompt")
+      -d "$escaped_prompt" || true)
 
-    if [ $? -eq 0 ] && echo "$api_response" | jq -e '.error' >/dev/null 2>&1; then
-      echo "::error::OpenAI error: $(echo "$api_response" | jq -r '.error.message')"
-      exit 1
-    fi
+    local http_code
+    http_code=$(printf '%s' "$raw" | tail -n1)
+    api_response=$(printf '%s' "$raw" | sed '$d')
 
-    if [ -n "$api_response" ] && echo "$api_response" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
+    if [ "$http_code" = "200" ] && echo "$api_response" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
       break
     fi
+
+    local err_msg
+    err_msg=$(echo "$api_response" | jq -r '.error.message // empty' 2>/dev/null)
+    echo "::warning::OpenAI request failed (HTTP ${http_code:-000})${err_msg:+: $err_msg}"
 
     attempt=$((attempt + 1))
   done
