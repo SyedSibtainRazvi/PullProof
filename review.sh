@@ -94,7 +94,7 @@ Be direct. Do not pad with praise. Focus on what needs fixing."
   local api_response=""
   while [ $attempt -le $RETRY_ATTEMPTS ]; do
     if [ $attempt -gt 1 ]; then
-      echo "Retry attempt $attempt of $RETRY_ATTEMPTS..."
+      echo "Retry attempt $attempt of $RETRY_ATTEMPTS..." >&2
       sleep $RETRY_DELAY
     fi
 
@@ -118,20 +118,20 @@ Be direct. Do not pad with praise. Focus on what needs fixing."
 
     local err_msg
     err_msg=$(echo "$api_response" | jq -r '.error.message // empty' 2>/dev/null)
-    echo "::warning::OpenAI request failed (HTTP ${http_code:-000})${err_msg:+: $err_msg}"
+    echo "::warning::OpenAI request failed (HTTP ${http_code:-000})${err_msg:+: $err_msg}" >&2
 
     attempt=$((attempt + 1))
   done
 
   if [ $attempt -gt $RETRY_ATTEMPTS ]; then
-    echo "::error::OpenAI API call failed after $RETRY_ATTEMPTS attempts"
+    echo "::error::OpenAI API call failed after $RETRY_ATTEMPTS attempts" >&2
     exit 1
   fi
 
   local review=$(echo "$api_response" | jq -r '.choices[0].message.content // empty')
 
   if [ -z "$review" ]; then
-    echo "::error::No review content received"
+    echo "::error::No review content received" >&2
     exit 1
   fi
 
