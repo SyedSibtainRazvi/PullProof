@@ -159,21 +159,38 @@ truncate_content() {
 
 echo "Processing PR #$PR_NUMBER"
 
-FILES_RESPONSE=$(curl -sf -H "Authorization: token $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github.v3+json" \
-  "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/files") || {
-  echo "::error::Failed to fetch PR files"
-  exit 1
-}
+# Right after a push, GitHub may still be computing the PR diff and return an
+# empty `patch` for files that clearly have additions. Retry until the patch is
+# populated so we don't silently skip a file whose diff just wasn't ready yet.
+FETCH_ATTEMPTS=5
+FETCH_DELAY=5
+fetch_attempt=1
+while :; do
+  FILES_RESPONSE=$(curl -sf --connect-timeout 10 --max-time 30 \
+    -H "Authorization: token $GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github.v3+json" \
+    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/files?per_page=100") || {
+    echo "::error::Failed to fetch PR files"
+    exit 1
+  }
 
-MD_FILES=$(echo "$FILES_RESPONSE" | jq -c '[.[] | select(.filename | test("\\.(md|mdx)$")) | select(.patch != null)]')
+  MD_FILES=$(echo "$FILES_RESPONSE" | jq -c '[.[] | select(.filename | test("\\.(md|mdx)$"))]')
+  FILE_COUNT=$(echo "$MD_FILES" | jq 'length')
 
-FILE_COUNT=$(echo "$MD_FILES" | jq 'length')
+  if [ "$FILE_COUNT" -eq 0 ] 2>/dev/null || [ "$MD_FILES" = "[]" ]; then
+    echo "No .md/.mdx changes found, skipping."
+    exit 0
+  fi
 
-if [ "$FILE_COUNT" -eq 0 ] 2>/dev/null || [ -z "$MD_FILES" ] || [ "$MD_FILES" = "[]" ]; then
-  echo "No .md/.mdx changes found, skipping."
-  exit 0
-fi
+  PENDING=$(echo "$MD_FILES" | jq '[.[] | select(.additions > 0 and (.patch // "") == "")] | length')
+  if [ "$PENDING" -eq 0 ] || [ "$fetch_attempt" -ge "$FETCH_ATTEMPTS" ]; then
+    break
+  fi
+
+  echo "Diff not ready for $PENDING file(s), retrying ($fetch_attempt/$FETCH_ATTEMPTS)..."
+  sleep $FETCH_DELAY
+  fetch_attempt=$((fetch_attempt + 1))
+done
 
 echo "Found $FILE_COUNT file(s) to review"
 
@@ -183,12 +200,28 @@ for i in $(seq 0 $((FILE_COUNT - 1))); do
   FILE_JSON=$(echo "$MD_FILES" | jq -c ".[$i]")
 
   FILENAME=$(echo "$FILE_JSON" | jq -r '.filename')
-  RAW_PATCH=$(echo "$FILE_JSON" | jq -r '.patch')
+  ADDITIONS=$(echo "$FILE_JSON" | jq -r '.additions')
 
+  if [ "$ADDITIONS" -eq 0 ] 2>/dev/null; then
+    echo "No additions in $FILENAME, skipping."
+    continue
+  fi
+
+  RAW_PATCH=$(echo "$FILE_JSON" | jq -r '.patch // ""')
   PATCH=$(echo "$RAW_PATCH" | grep -E '^\+' | grep -v '^\+\+\+' | sed 's/^\+//')
 
+  # Fallback: patch still empty (race unresolved, or omitted for large diffs) —
+  # review the full file content at the PR head instead of skipping.
   if [ -z "$PATCH" ]; then
-    echo "No additions in $FILENAME, skipping."
+    CONTENTS_URL=$(echo "$FILE_JSON" | jq -r '.contents_url')
+    PATCH=$(curl -sf --connect-timeout 10 --max-time 30 \
+      -H "Authorization: token $GITHUB_TOKEN" \
+      -H "Accept: application/vnd.github.v3.raw" \
+      "$CONTENTS_URL" 2>/dev/null || true)
+  fi
+
+  if [ -z "$PATCH" ]; then
+    echo "No content to review in $FILENAME, skipping."
     continue
   fi
 
