@@ -26,9 +26,36 @@ if [ -z "$PR_NUMBER" ] || [ -z "$REPO" ]; then
   exit 1
 fi
 
+# The model is unreliable at noticing/counting what a post already contains —
+# it suggested adding diagrams and references to posts that had them. Compute
+# those facts deterministically and hand them to the prompt instead.
+content_facts() {
+  local content="$1"
+
+  local image_count
+  image_count=$(printf '%s\n' "$content" | grep -cE '!\[[^]]*\]\(|<Image[ />]|<img[ />]') || true
+
+  # frontmatter key with a non-empty value; images: [] / image: '' count as absent
+  local cover_line cover_image="absent"
+  cover_line=$(printf '%s\n' "$content" | grep -m1 -E '^[[:space:]]*(images?|cover|coverImage|hero)[[:space:]]*:' || true)
+  if [ -n "$cover_line" ] && ! printf '%s' "$cover_line" | grep -qE ":[[:space:]]*(\[\]|''|\"\")?[[:space:]]*,?[[:space:]]*$"; then
+    cover_image="present"
+  fi
+
+  local references="absent"
+  printf '%s\n' "$content" | grep -qiE '^#{1,6}[[:space:]]*(references|further reading|resources|useful links|read more)' && references="present"
+
+  local link_count
+  link_count=$(printf '%s\n' "$content" | grep -oE '\]\(https?://' | wc -l | tr -d ' ')
+
+  printf 'Verified facts about this post (computed programmatically — trust these over your own impression):\n- Inline images/diagrams: %s\n- Cover/hero image in frontmatter: %s\n- References/Further-reading section: %s\n- External links: %s' \
+    "$image_count" "$cover_image" "$references" "$link_count"
+}
+
 get_review_content() {
   local filename="$1"
   local content="$2"
+  local facts="$3"
 
   local system_prompt="You are PullProof, an expert technical blog reviewer. Review the following blog post and provide structured feedback.
 
@@ -64,6 +91,8 @@ Evaluate these dimensions and give each a rating (Good / Needs Work / Missing):
 - Is the length appropriate for the topic?
 - Any suggestions for diagrams, examples, or visuals?
 
+The user message includes VERIFIED FACTS about the post (image count, cover image, references section, link count), computed programmatically. Trust them over your own reading. Never suggest adding something the facts show already exists. If a specific section would still benefit from an additional diagram or citation despite what exists, name that exact section and justify why.
+
 Format your response as:
 
 ### Summary
@@ -86,8 +115,8 @@ Format your response as:
 
 Be direct. Do not pad with praise. Focus on what needs fixing."
 
-  local escaped_prompt=$(jq -n --arg sys "$system_prompt" --arg file "$filename" --arg content "$content" \
-    '{"role": "system", "content": $sys}, {"role": "user", "content": ("File: " + $file + "\n\nContent to review:\n" + $content)}' |
+  local escaped_prompt=$(jq -n --arg sys "$system_prompt" --arg file "$filename" --arg content "$content" --arg facts "$facts" \
+    '{"role": "system", "content": $sys}, {"role": "user", "content": ("File: " + $file + "\n\n" + $facts + "\n\nContent to review:\n" + $content)}' |
     jq -s '{model: env.MODEL, messages: ., temperature: 0.3, max_tokens: env.MAX_TOKENS}')
 
   local attempt=1
@@ -202,9 +231,10 @@ for i in $(seq 0 $((FILE_COUNT - 1))); do
 
   CONTENT=$(truncate_content "$CONTENT")
 
-  echo "Reviewing $FILENAME..."
+  FACTS=$(content_facts "$CONTENT")
+  echo "Reviewing $FILENAME... ($(printf '%s' "$FACTS" | tail -n +2 | tr '\n' ';' ))"
 
-  REVIEW=$(get_review_content "$FILENAME" "$CONTENT")
+  REVIEW=$(get_review_content "$FILENAME" "$CONTENT" "$FACTS")
 
   if [ -n "$TOTAL_REVIEWS" ]; then
     TOTAL_REVIEWS="$TOTAL_REVIEWS
